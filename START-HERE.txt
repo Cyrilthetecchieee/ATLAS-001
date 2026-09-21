@@ -1,0 +1,17 @@
+ATLAS-001 — Embedded Monitoring & Telemetry System
+
+1. Extract this ZIP.
+2. Open the ATLAS-001 folder in VS Code or Antigravity.
+3. Open a terminal in that folder.
+4. With Python installed, run:
+   Windows: py -m http.server 8000 --directory dist
+   macOS/Linux: python3 -m http.server 8000 --directory dist
+5. Open http://localhost:8000 in your browser.
+6. Stop the server with Ctrl+C.
+
+Alternative: serve the dist folder with your editor's local web server.
+Do not double-click index.html; JavaScript modules need an HTTP server.
+
+The dist folder contains the complete editable HTML, CSS, and JavaScript source; no compilation or npm installation is required.
+All telemetry is simulated. No backend or hardware credentials are needed.
+Google Fonts uses the internet; fallback fonts work when unavailable.
