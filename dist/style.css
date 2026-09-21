@@ -13,7 +13,8 @@ button.primary:hover{background:var(--accent-secondary);color:#0B0D0E}
 .status{color:var(--healthy)}
 .status.warning,.status.stale,.status.recovering,.status.paused,.status.simulation{color:var(--accent)}
 .status.critical,.status.fault{color:var(--critical)}
-.status.offline,.status.unavailable{color:var(--offline)}
+.status.offline,.status.unavailable,.status.waiting{color:var(--offline)}
+.status.waiting{color:var(--info)}
 .healthicon{background:#26292D;color:var(--info)}
 .badge,.badge.INFO{background:#26292D;color:var(--info)}
 .badge.WARNING{background:#26292D;color:var(--accent)}

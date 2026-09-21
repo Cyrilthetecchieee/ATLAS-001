@@ -1,6 +1,7 @@
 // ─── ATLAS-001 Service Layer ────────────────────────────────────────────────
 // Connects frontend to ATLAS-001 backend. Transport-independent.
-// Consumes backend REST API for telemetry, events, logs, and devices.
+// Primary mode is REAL HARDWARE (ESP32 via Wi-Fi / LoRa).
+// Simulation Mode is an OPTIONAL educational/testing feature (OFF by default).
 
 import * as api from './api.js';
 import { POLL_INTERVAL } from './config.js';
@@ -82,7 +83,7 @@ export function transformPacket(raw) {
       unit: metrics[k][1],
       timestamp: ts,
       quality: (val === null || val === undefined || isNaN(val)) ? 'UNAVAILABLE' : defaultQ,
-      source: raw.mode || 'SIMULATION'
+      source: raw.mode || 'REAL'
     };
   }
 
@@ -90,8 +91,8 @@ export function transformPacket(raw) {
     deviceId: raw.deviceId || 'ATLAS-001',
     timestamp: ts,
     sequence: raw.sequence ?? 0,
-    mode: raw.mode || 'SIMULATION',
-    transport: raw.transport || 'SIMULATION',
+    mode: raw.mode || 'REAL',
+    transport: raw.transport || 'WIFI',
     systemHealth: raw.systemHealth || 'NORMAL',
     dataQuality: defaultQ,
     readings,
@@ -104,6 +105,8 @@ export function transformPacket(raw) {
 
 export class AtlasService {
   constructor() {
+    // 1. Simulation is strictly OFF by default
+    this.simulationEnabled = false;
     this.scenario = 'Normal operation';
     this.sequence = 1800;
     this.listeners = new Set();
@@ -111,19 +114,31 @@ export class AtlasService {
     this.logs = [];
     this.history = [];
     this.devices = [];
-    this.interval = POLL_INTERVAL || 2000;
-    this.last = Date.now();
-    this.started = this.last;
-    this.mode = 'SIMULATION';
-    this.transport = 'SIMULATION';
-    this.backendOnline = true;
+    this.pollInterval = POLL_INTERVAL || 2000;
+    this.simInterval = 2000;
+    this.pollTimer = null;
+    this.simTimer = null;
+    this.recovery = null;
 
-    // Provide initial synchronous state so views render immediately
-    this.current = this.transformPacket(this.generateSimPacket(this.last, this.sequence));
-    this.history.push(this.current);
+    this.backendOnline = false;
+    this.expectedTransport = 'WIFI';
+    this.mode = 'REAL';
+    this.transport = 'WIFI';
 
-    // Initial async bootstrap and start background loops
+    // Current live telemetry packet (null when no hardware packet received yet)
+    this.current = null;
+    this.last = 0;
+    this.started = Date.now();
+
+    // Start background sync
     this.init();
+  }
+
+  get hasLiveHardware() {
+    if (this.simulationEnabled) return false;
+    if (!this.current || this.current.mode !== 'REAL') return false;
+    const age = Date.now() - this.current.timestamp;
+    return age < 25000;
   }
 
   generateSimPacket(t, seq) {
@@ -196,37 +211,100 @@ export class AtlasService {
     const healthRes = await api.getHealth();
     this.backendOnline = healthRes.ok;
 
-    if (this.backendOnline) {
-      // Check existing history
-      const histRes = await api.getHistory({ limit: 50 });
-      if (!histRes.ok || !histRes.data || histRes.data.length === 0) {
-        // Seed initial history into backend so charts are rich from the first second
-        const seedTime = Date.now();
-        for (let i = 24; i >= 0; i--) {
-          const t = seedTime - i * 60000;
-          const pkt = this.generateSimPacket(t, this.sequence - i);
-          await api.postTelemetry(pkt);
-        }
-      }
-      await this.syncFromBackend();
-    }
+    // Do NOT seed fake simulation data into backend on startup.
+    // Sync whatever real/backend state exists.
+    await this.syncFromBackend();
 
-    // Start ticker
-    this.timer = setInterval(() => this.tick(), this.interval);
+    // Polling loop always runs to receive real hardware telemetry
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = setInterval(() => this.syncFromBackend(), this.pollInterval);
   }
 
-  async tick() {
-    // Only post simulation packet if not in Communication loss and not in REAL mode
-    if (this.scenario !== 'Communication loss' && this.mode !== 'REAL') {
+  // ─── Simulation Mode Lifecycle ──────────────────────────────────────────────
+  async enableSimulation() {
+    if (this.simulationEnabled) return;
+    this.simulationEnabled = true;
+    this.mode = 'SIMULATION';
+    this.transport = 'SIMULATION';
+
+    await api.postLog({
+      deviceId: 'ATLAS-001',
+      source: 'SIMULATION',
+      level: 'INFO',
+      message: 'Educational / Demo Simulation Mode enabled.'
+    });
+
+    await api.postEvent({
+      deviceId: 'ATLAS-001',
+      type: 'DEMO_MODE_ENABLED',
+      subsystem: 'Simulation',
+      severity: 'INFO',
+      state: 'ACTIVE',
+      description: 'Educational Simulation Mode enabled. Telemetry is synthetic.'
+    });
+
+    this.startSimTicker();
+    await this.simTick();
+    this.emit();
+  }
+
+  async disableSimulation() {
+    if (!this.simulationEnabled) return;
+    this.simulationEnabled = false;
+    this.stopSimTicker();
+
+    // If active packet was synthetic, remove it so we don't display fake data as real
+    if (this.current && this.current.mode === 'SIMULATION') {
+      this.current = null;
+      this.last = 0;
+    }
+    this.mode = 'REAL';
+    this.transport = this.expectedTransport;
+
+    await api.postLog({
+      deviceId: 'ATLAS-001',
+      source: 'SIMULATION',
+      level: 'INFO',
+      message: 'Educational / Demo Simulation Mode disabled. Waiting for real hardware.'
+    });
+
+    await this.syncFromBackend();
+    this.emit();
+  }
+
+  toggleSimulation(enable) {
+    if (enable === undefined) enable = !this.simulationEnabled;
+    return enable ? this.enableSimulation() : this.disableSimulation();
+  }
+
+  startSimTicker() {
+    this.stopSimTicker();
+    this.simTimer = setInterval(() => this.simTick(), this.simInterval);
+  }
+
+  stopSimTicker() {
+    if (this.simTimer) {
+      clearInterval(this.simTimer);
+      this.simTimer = null;
+    }
+    if (this.recovery) {
+      clearTimeout(this.recovery);
+      this.recovery = null;
+    }
+  }
+
+  async simTick() {
+    if (!this.simulationEnabled) return;
+    if (this.scenario !== 'Communication loss') {
       this.sequence++;
       this.last = Date.now();
       const packet = this.generateSimPacket(this.last, this.sequence);
       await api.postTelemetry(packet);
     }
-
     await this.syncFromBackend();
   }
 
+  // ─── Backend Synchronization ────────────────────────────────────────────────
   async syncFromBackend() {
     const [latestRes, histRes, eventsRes, logsRes, devRes] = await Promise.all([
       api.getLatest('ATLAS-001'),
@@ -236,7 +314,6 @@ export class AtlasService {
       api.getDevices()
     ]);
 
-    // Backend connectivity status
     if (!latestRes.ok && latestRes.status === 0) {
       this.backendOnline = false;
       this.emit();
@@ -246,21 +323,43 @@ export class AtlasService {
     this.backendOnline = true;
 
     if (latestRes.ok && latestRes.data) {
-      this.current = this.transformPacket(latestRes.data);
-      this.last = this.current.timestamp;
-      this.sequence = this.current.sequence;
-      this.mode = this.current.mode;
-      this.transport = this.current.transport;
+      const pkt = this.transformPacket(latestRes.data);
+
+      if (this.simulationEnabled) {
+        // In simulation mode, accept simulation or real packets
+        this.current = pkt;
+        this.last = pkt.timestamp;
+        this.sequence = pkt.sequence;
+        this.mode = pkt.mode;
+        this.transport = pkt.transport;
+      } else {
+        // In real hardware mode: ONLY accept packets where mode === 'REAL'
+        if (pkt.mode === 'REAL') {
+          this.current = pkt;
+          this.last = pkt.timestamp;
+          this.sequence = pkt.sequence;
+          this.mode = 'REAL';
+          this.transport = pkt.transport || this.expectedTransport;
+        } else {
+          // Latest packet in backend was SIMULATION, but Simulation is OFF.
+          // Do NOT present old simulation data as real live hardware telemetry!
+          this.current = null;
+          this.last = 0;
+          this.mode = 'REAL';
+          this.transport = this.expectedTransport;
+        }
+      }
+    } else {
+      if (!this.simulationEnabled) {
+        this.current = null;
+        this.last = 0;
+      }
     }
 
     if (histRes.ok && Array.isArray(histRes.data)) {
-      // backend returns newest first, reverse for chronological order (oldest to newest)
-      const transformed = histRes.data
+      this.history = histRes.data
         .map(p => this.transformPacket(p))
         .sort((a, b) => a.timestamp - b.timestamp);
-      if (transformed.length > 0) {
-        this.history = transformed;
-      }
     }
 
     if (eventsRes.ok && Array.isArray(eventsRes.data)) {
@@ -294,12 +393,25 @@ export class AtlasService {
 
   health() {
     if (!this.backendOnline) return 'OFFLINE';
+
+    if (this.simulationEnabled) {
+      const age = Date.now() - this.last;
+      if (age > 12000) return 'OFFLINE';
+      if (age > 6000) return 'STALE';
+      if (this.scenario === 'Critical event') return 'CRITICAL';
+      if (this.scenario === 'Recovery') return 'RECOVERING';
+      if (['Warning', 'Sensor failure'].includes(this.scenario)) return 'WARNING';
+      return this.current?.systemHealth || 'NORMAL';
+    }
+
+    // Real Hardware Mode
+    if (!this.current || this.current.mode !== 'REAL') {
+      return 'WAITING';
+    }
+
     const age = Date.now() - this.last;
-    if (age > 12000) return 'OFFLINE';
-    if (age > 6000) return 'STALE';
-    if (this.scenario === 'Critical event') return 'CRITICAL';
-    if (this.scenario === 'Recovery') return 'RECOVERING';
-    if (['Warning', 'Sensor failure'].includes(this.scenario)) return 'WARNING';
+    if (age > 20000) return 'OFFLINE';
+    if (age > 10000) return 'STALE';
     return this.current?.systemHealth || 'NORMAL';
   }
 
@@ -308,15 +420,15 @@ export class AtlasService {
       return {
         value: null,
         unit: metrics[k] ? metrics[k][1] : '',
-        timestamp: this.last,
+        timestamp: 0,
         quality: 'UNAVAILABLE',
-        source: this.mode
+        source: this.simulationEnabled ? 'SIMULATION' : 'REAL'
       };
     }
     const r = this.current.readings[k];
     const age = Date.now() - r.timestamp;
-    const isStale = age > 6000 && r.quality === 'VALID';
-    const isOffline = !this.backendOnline || age > 12000;
+    const isStale = age > 10000 && r.quality === 'VALID';
+    const isOffline = !this.backendOnline || age > 20000;
     return {
       ...r,
       quality: isOffline ? 'UNAVAILABLE' : isStale ? 'STALE' : r.quality
@@ -325,11 +437,12 @@ export class AtlasService {
 
   async setScenario(s) {
     if (!scenarios.includes(s)) throw Error('Unknown scenario: ' + s);
+    if (!this.simulationEnabled) {
+      await this.enableSimulation();
+    }
+
     clearTimeout(this.recovery);
     this.scenario = s;
-    if (s !== 'Communication loss') {
-      this.mode = 'SIMULATION';
-    }
 
     const severity = s === 'Critical event'
       ? 'CRITICAL'
@@ -346,26 +459,23 @@ export class AtlasService {
       'Recovery': 'Communication restored. Subsystems are recovering.'
     };
 
-    // Post event to backend
     await api.postEvent({
       deviceId: 'ATLAS-001',
       type: s,
       subsystem: s.includes('Communication') ? 'Communication' : s.includes('Sensor') ? 'Environment' : 'System',
       severity,
       state: s === 'Normal operation' ? 'RESOLVED' : 'ACTIVE',
-      description: descriptions[s]
+      description: `[DEMO] ${descriptions[s]}`
     });
 
-    // Post log to backend
     await api.postLog({
       deviceId: 'ATLAS-001',
       source: 'SIMULATION',
       level: severity === 'CRITICAL' ? 'ERROR' : severity,
-      message: descriptions[s]
+      message: `[DEMO] ${descriptions[s]}`
     });
 
-    // Immediate tick
-    await this.tick();
+    await this.simTick();
 
     if (s === 'Recovery') {
       this.recovery = setTimeout(() => this.setScenario('Normal operation'), 5000);
@@ -400,9 +510,10 @@ export class AtlasService {
   }
 
   setRefresh(ms) {
-    this.interval = ms;
-    clearInterval(this.timer);
-    this.timer = setInterval(() => this.tick(), ms);
+    this.simInterval = ms;
+    if (this.simulationEnabled) {
+      this.startSimTicker();
+    }
     this.emit();
   }
 }
