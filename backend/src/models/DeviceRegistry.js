@@ -5,7 +5,18 @@ class DeviceRegistry {
   constructor() {
     this.devices = new Map();
 
-    // Pre-register the development device
+    // Pre-register default devices
+    this.devices.set('Groundstation', {
+      deviceId: 'Groundstation',
+      name: 'Groundstation Base & Telemetry Receiver',
+      status: 'NORMAL',
+      mode: 'REAL',
+      transport: 'WIFI',
+      firmwareVersion: '1.0.0',
+      lastSeen: new Date().toISOString(),
+      registeredAt: new Date().toISOString()
+    });
+
     this.devices.set('ATLAS-001', {
       deviceId: 'ATLAS-001',
       name: 'ATLAS-001 Embedded Monitoring Unit',

@@ -123,7 +123,12 @@ export class AtlasService {
     this.backendOnline = false;
     this.expectedTransport = 'WIFI';
     this.mode = 'REAL';
-    this.transport = 'WIFI';
+    // Current active workspace / device
+    this.activeDevice = 'Groundstation';
+    try {
+      const saved = localStorage.getItem('atlas-workspace');
+      if (saved) this.activeDevice = saved;
+    } catch {}
 
     // Current live telemetry packet (null when no hardware packet received yet)
     this.current = null;
@@ -132,6 +137,12 @@ export class AtlasService {
 
     // Start background sync
     this.init();
+  }
+
+  setActiveDevice(id) {
+    if (!id || this.activeDevice === id) return;
+    this.activeDevice = id;
+    this.syncFromBackend();
   }
 
   get hasLiveHardware() {
@@ -155,7 +166,7 @@ export class AtlasService {
     else if (this.scenario === 'Recovery') sysHealth = 'RECOVERING';
 
     return {
-      deviceId: 'ATLAS-001',
+      deviceId: this.activeDevice || 'Groundstation',
       timestamp: new Date(t).toISOString(),
       sequence: seq,
       mode: 'SIMULATION',
@@ -228,14 +239,14 @@ export class AtlasService {
     this.transport = 'SIMULATION';
 
     await api.postLog({
-      deviceId: 'ATLAS-001',
+      deviceId: this.activeDevice || 'Groundstation',
       source: 'SIMULATION',
       level: 'INFO',
       message: 'Educational / Demo Simulation Mode enabled.'
     });
 
     await api.postEvent({
-      deviceId: 'ATLAS-001',
+      deviceId: this.activeDevice || 'Groundstation',
       type: 'DEMO_MODE_ENABLED',
       subsystem: 'Simulation',
       severity: 'INFO',
@@ -262,7 +273,7 @@ export class AtlasService {
     this.transport = this.expectedTransport;
 
     await api.postLog({
-      deviceId: 'ATLAS-001',
+      deviceId: this.activeDevice || 'Groundstation',
       source: 'SIMULATION',
       level: 'INFO',
       message: 'Educational / Demo Simulation Mode disabled. Waiting for real hardware.'
@@ -307,8 +318,8 @@ export class AtlasService {
   // ─── Backend Synchronization ────────────────────────────────────────────────
   async syncFromBackend() {
     const [latestRes, histRes, eventsRes, logsRes, devRes] = await Promise.all([
-      api.getLatest('ATLAS-001'),
-      api.getHistory({ limit: 200 }),
+      api.getLatest(this.activeDevice),
+      api.getHistory({ device: this.activeDevice, limit: 200 }),
       api.getEvents({ limit: 50 }),
       api.getLogs({ limit: 100 }),
       api.getDevices()
@@ -460,7 +471,7 @@ export class AtlasService {
     };
 
     await api.postEvent({
-      deviceId: 'ATLAS-001',
+      deviceId: this.activeDevice || 'Groundstation',
       type: s,
       subsystem: s.includes('Communication') ? 'Communication' : s.includes('Sensor') ? 'Environment' : 'System',
       severity,
@@ -469,7 +480,7 @@ export class AtlasService {
     });
 
     await api.postLog({
-      deviceId: 'ATLAS-001',
+      deviceId: this.activeDevice || 'Groundstation',
       source: 'SIMULATION',
       level: severity === 'CRITICAL' ? 'ERROR' : severity,
       message: `[DEMO] ${descriptions[s]}`
@@ -487,7 +498,7 @@ export class AtlasService {
     if (e && e.state === 'ACTIVE') {
       e.state = 'ACKNOWLEDGED';
       await api.postLog({
-        deviceId: 'ATLAS-001',
+        deviceId: this.activeDevice || 'Groundstation',
         source: 'EVENT_ENGINE',
         level: 'INFO',
         message: `${id} acknowledged`
@@ -499,7 +510,7 @@ export class AtlasService {
   async log(source, level, message) {
     const safeSource = source === 'EVENT ENGINE' ? 'EVENT_ENGINE' : source;
     await api.postLog({
-      deviceId: 'ATLAS-001',
+      deviceId: this.activeDevice || 'Groundstation',
       source: safeSource,
       level,
       message
