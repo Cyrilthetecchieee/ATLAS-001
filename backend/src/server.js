@@ -18,10 +18,12 @@ app.listen(PORT, HOST, () => {
   console.log(`  ║  Local:    http://localhost:${PORT}/api/health`);
   console.log(`  ║  Network:  http://${localIP}:${PORT}/api/health`);
   console.log('  ║                                                      ');
-  console.log('  ║  ESP32 target (Wi-Fi):                               ');
+  console.log(`  ║  ESP32 target (Wi-Fi):                               `);
   console.log(`  ║  POST http://${localIP}:${PORT}/api/telemetry`);
   console.log('  ║                                                      ');
-  console.log('  ║  Transports:  WIFI | SIMULATION | LORA_GATEWAY       ');
+  console.log(`  ║  Transport:    ${config.defaultTransport.padEnd(38)}║`);
+  const authStatus = config.apiKey ? (config.requireApiKey ? 'ENFORCED (Required)' : 'ENABLED (Optional)') : 'OFF (No key set)';
+  console.log(`  ║  API Key Auth: ${authStatus.padEnd(38)}║`);
   console.log('  ║  Storage:     In-memory (Phase 1)                    ');
   console.log('  ╚══════════════════════════════════════════════════════╝');
   console.log('');

@@ -1,10 +1,34 @@
-// ─── ATLAS-001 Backend Configuration ─────────────────────────────────────────
-// Centralized constants and enums for transport-independent telemetry system.
+const path = require('path');
+const fs = require('fs');
+
+// Load environment variables (.env in backend/ or root workspace)
+const envLocations = [
+  path.resolve(__dirname, '../../.env'),
+  path.resolve(__dirname, '../../../.env')
+];
+
+for (const envPath of envLocations) {
+  if (fs.existsSync(envPath)) {
+    require('dotenv').config({ path: envPath });
+  }
+}
 
 const config = {
   port: parseInt(process.env.PORT, 10) || 5000,
   host: process.env.HOST || '0.0.0.0',
   corsOrigin: process.env.CORS_ORIGIN || '*',
+
+  // ── Authentication & Security ─────────────────────────────────────────────
+  apiKey: process.env.API_KEY || process.env.ATLAS_API_KEY || '',
+  requireApiKey: process.env.REQUIRE_API_KEY === 'true',
+
+  // ── Wi-Fi & Device Configuration ──────────────────────────────────────────
+  wifiSsid: process.env.WIFI_SSID || '',
+  wifiPassword: process.env.WIFI_PASSWORD || '',
+  apiBaseUrl: process.env.API_BASE_URL || 'http://192.168.1.42',
+  apiEndpoint: process.env.API_ENDPOINT || 'http://192.168.1.42/api/telemetry',
+  deviceId: process.env.DEVICE_ID || 'ATLAS-001',
+  defaultTransport: process.env.TRANSPORT || 'WIFI',
 
   // ── Transport layer (replaceable without rebuilding) ───────────────────────
   transports: ['WIFI', 'LORA_GATEWAY', 'SIMULATION'],

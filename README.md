@@ -46,7 +46,26 @@ npm install
 npm run dev
 ```
 
-The backend starts on `0.0.0.0:5000` — accessible from other devices on the same network.
+The backend starts on `0.0.0.0:5000` — accessible from other devices on the same Wi-Fi network.
+
+### Environment Configuration (.env)
+
+Configure backend settings and Wi-Fi connection parameters in `backend/.env` (or copy from `.env.example`):
+
+```ini
+PORT=5000
+HOST=0.0.0.0
+API_KEY=atlas_wifi_dev_key_2026_sec01
+REQUIRE_API_KEY=false
+WIFI_SSID=Your_WiFi_Network_Name
+WIFI_PASSWORD=Your_WiFi_Password
+API_BASE_URL=http://<YOUR_LOCAL_IP>:5000
+DEVICE_ID=ATLAS-001
+TRANSPORT=WIFI
+```
+
+When sending telemetry from hardware (e.g. ESP32 over Wi-Fi), include the API key in the header:
+- `x-api-key: <YOUR_API_KEY>` or `Authorization: Bearer <YOUR_API_KEY>`
 
 ## API Endpoints
 

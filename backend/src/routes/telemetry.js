@@ -6,11 +6,12 @@
 const express = require('express');
 const router = express.Router();
 const { validateTelemetry } = require('../validators/telemetryValidator');
+const apiKeyAuth = require('../middleware/apiKeyAuth');
 const telemetryService = require('../services/telemetryService');
 const logService = require('../services/logService');
 
 // ── POST /api/telemetry ──────────────────────────────────────────────────────
-router.post('/', (req, res) => {
+router.post('/', apiKeyAuth, (req, res) => {
   const result = validateTelemetry(req.body);
 
   if (!result.valid) {
