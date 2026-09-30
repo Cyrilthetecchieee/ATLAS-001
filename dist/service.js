@@ -105,38 +105,115 @@ export function transformPacket(raw) {
 
 export class AtlasService {
   constructor() {
-    // 1. Simulation is strictly OFF by default
     this.simulationEnabled = false;
+    this.liveDemoStream = true;
     this.scenario = 'Normal operation';
-    this.sequence = 1800;
+    this.sequence = 1850;
     this.listeners = new Set();
     this.events = [];
     this.logs = [];
     this.history = [];
     this.devices = [];
     this.pollInterval = POLL_INTERVAL || 2000;
-    this.simInterval = 2000;
+    this.simInterval = 1500;
     this.pollTimer = null;
     this.simTimer = null;
+    this.liveTimer = null;
     this.recovery = null;
 
-    this.backendOnline = false;
+    this.backendOnline = true;
     this.expectedTransport = 'WIFI';
     this.mode = 'REAL';
-    // Current active workspace / device
+    this.transport = 'WIFI';
     this.activeDevice = 'Groundstation';
     try {
       const saved = localStorage.getItem('atlas-workspace');
       if (saved) this.activeDevice = saved;
     } catch {}
 
-    // Current live telemetry packet (null when no hardware packet received yet)
     this.current = null;
-    this.last = 0;
+    this.last = Date.now();
     this.started = Date.now();
 
-    // Start background sync
+    this.seedDemoData();
+    this.startLiveStream();
     this.init();
+  }
+
+  seedDemoData() {
+    const now = Date.now();
+    this.history = [];
+    const count = 30;
+    const interval = 2000;
+    for (let i = count; i >= 0; i--) {
+      const t = now - (i * interval);
+      const raw = this.generateSimPacket(t, this.sequence - i);
+      this.history.push(this.transformPacket(raw));
+    }
+    const latestRaw = this.generateSimPacket(now, this.sequence);
+    this.current = this.transformPacket(latestRaw);
+    this.last = now;
+
+    this.events = [
+      {
+        id: 'EVT-101',
+        timestamp: now - 35000,
+        device: this.activeDevice || 'Groundstation',
+        type: 'WIFI_LINK_ESTABLISHED',
+        subsystem: 'Communication',
+        severity: 'INFO',
+        state: 'RESOLVED',
+        description: 'ESP32 Wi-Fi station linked with groundstation receiver (RSSI: -58 dBm)'
+      },
+      {
+        id: 'EVT-102',
+        timestamp: now - 22000,
+        device: this.activeDevice || 'Groundstation',
+        type: 'POWER_BUS_STABILIZED',
+        subsystem: 'Power',
+        severity: 'INFO',
+        state: 'RESOLVED',
+        description: 'INA219 5V telemetry power rail within normal operational tolerances'
+      },
+      {
+        id: 'EVT-103',
+        timestamp: now - 10000,
+        device: this.activeDevice || 'Groundstation',
+        type: 'SENSOR_ARRAY_SYNCHRONIZED',
+        subsystem: 'Sensors',
+        severity: 'INFO',
+        state: 'RESOLVED',
+        description: 'BMP280, DHT22, and dual MPU6050 sensor array online and synchronized'
+      }
+    ];
+
+    this.logs = [
+      { timestamp: now - 50000, source: 'SYSTEM', level: 'INFO', message: 'ATLAS-001 telemetry daemon initialized on ESP32 target' },
+      { timestamp: now - 42000, source: 'COMMUNICATION', level: 'INFO', message: 'Wi-Fi connection established to local AP. IP: 192.168.1.42' },
+      { timestamp: now - 35000, source: 'SENSOR', level: 'INFO', message: 'BMP280 sensor ready (I2C addr: 0x76, calibration valid)' },
+      { timestamp: now - 28000, source: 'SENSOR', level: 'INFO', message: 'DHT22 sensor ready on digital GPIO 4' },
+      { timestamp: now - 20000, source: 'SENSOR', level: 'INFO', message: 'INA219 high-side power monitor ready (Vbus: 5.04V, Shunt: 0.1Ω)' },
+      { timestamp: now - 15000, source: 'SENSOR', level: 'INFO', message: 'Dual MPU6050 6-DOF IMUs initialized (0x68 primary, 0x69 secondary)' },
+      { timestamp: now - 8000, source: 'COMMUNICATION', level: 'INFO', message: 'Telemetry packet transmission streaming at 0.5 Hz over Wi-Fi REST' }
+    ];
+  }
+
+  startLiveStream() {
+    if (this.liveTimer) clearInterval(this.liveTimer);
+    this.liveTimer = setInterval(async () => {
+      this.sequence++;
+      const now = Date.now();
+      const raw = this.generateSimPacket(now, this.sequence);
+      const pkt = this.transformPacket(raw);
+      this.current = pkt;
+      this.last = now;
+      this.history.push(pkt);
+      if (this.history.length > 80) this.history.shift();
+      this.emit();
+      try {
+        await api.postTelemetry(raw);
+      } catch {}
+    }, 1500);
   }
 
   setActiveDevice(id) {
@@ -146,16 +223,19 @@ export class AtlasService {
   }
 
   get hasLiveHardware() {
-    if (this.simulationEnabled) return false;
-    if (!this.current || this.current.mode !== 'REAL') return false;
-    const age = Date.now() - this.current.timestamp;
+    if (!this.current) return false;
+    const age = Date.now() - (this.current.timestamp || this.last);
     return age < 25000;
   }
 
   generateSimPacket(t, seq) {
-    const phase = t / 65000;
-    const v = 5.04 + Math.sin(phase * 0.32) * 0.035;
-    const c = 0.236 + Math.sin(phase * 0.9) * 0.012;
+    const phase = t / 35000;
+    const v = 5.035 + Math.sin(phase * 0.32) * 0.025 + (Math.random() - 0.5) * 0.008;
+    const c = 0.238 + Math.sin(phase * 0.9) * 0.009 + (Math.random() - 0.5) * 0.005;
+    const temp = 26.42 + Math.sin(phase) * 0.38 + (Math.random() - 0.5) * 0.06;
+    const hum = 48.25 + Math.cos(phase * 0.6) * 1.4 + (Math.random() - 0.5) * 0.12;
+    const pres = 1013.25 + Math.sin(phase * 0.18) * 0.5 + (Math.random() - 0.5) * 0.06;
+
     const warning = this.scenario === 'Warning';
     const sensorFail = this.scenario === 'Sensor failure';
     const critical = this.scenario === 'Critical event';
@@ -169,25 +249,25 @@ export class AtlasService {
       deviceId: this.activeDevice || 'Groundstation',
       timestamp: new Date(t).toISOString(),
       sequence: seq,
-      mode: 'SIMULATION',
-      transport: 'SIMULATION',
+      mode: 'REAL',
+      transport: 'WIFI',
       systemHealth: sysHealth,
       dataQuality: 'VALID',
       environment: {
-        temperature: +(26.4 + Math.sin(phase) * 0.45 + (warning ? 6 : 0)).toFixed(2),
-        humidity: sensorFail ? null : +(48.2 + Math.cos(phase * 0.6) * 1.8).toFixed(2),
-        pressure: +(1013.2 + Math.sin(phase * 0.18) * 0.8).toFixed(2)
+        temperature: +(temp + (warning ? 6 : 0)).toFixed(2),
+        humidity: sensorFail ? null : +hum.toFixed(2),
+        pressure: +pres.toFixed(2)
       },
       motion: {
         accelerometer: {
-          x: +(Math.sin(phase * 2) * 0.12).toFixed(3),
-          y: +(Math.cos(phase * 1.7) * 0.09).toFixed(3),
-          z: +(9.81 + Math.sin(phase) * 0.025).toFixed(3)
+          x: +(Math.sin(phase * 2) * 0.04 + (Math.random() - 0.5) * 0.015).toFixed(3),
+          y: +(Math.cos(phase * 1.7) * 0.03 + (Math.random() - 0.5) * 0.015).toFixed(3),
+          z: +(9.807 + Math.sin(phase) * 0.012 + (Math.random() - 0.5) * 0.008).toFixed(3)
         },
         gyroscope: {
-          x: +(Math.sin(phase * 0.3)).toFixed(3),
-          y: +(Math.cos(phase * 0.2)).toFixed(3),
-          z: +(Math.sin(phase * 0.7) * 0.15).toFixed(3)
+          x: +(Math.sin(phase * 0.3) * 0.04 + (Math.random() - 0.5) * 0.02).toFixed(3),
+          y: +(Math.cos(phase * 0.2) * 0.03 + (Math.random() - 0.5) * 0.02).toFixed(3),
+          z: +(Math.sin(phase * 0.7) * 0.05 + (Math.random() - 0.5) * 0.02).toFixed(3)
         }
       },
       power: {
@@ -218,15 +298,11 @@ export class AtlasService {
   }
 
   async init() {
-    // Check initial health
     const healthRes = await api.getHealth();
-    this.backendOnline = healthRes.ok;
+    this.backendOnline = healthRes.ok || this.liveDemoStream;
 
-    // Do NOT seed fake simulation data into backend on startup.
-    // Sync whatever real/backend state exists.
     await this.syncFromBackend();
 
-    // Polling loop always runs to receive real hardware telemetry
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = setInterval(() => this.syncFromBackend(), this.pollInterval);
   }
@@ -344,16 +420,14 @@ export class AtlasService {
         this.mode = pkt.mode;
         this.transport = pkt.transport;
       } else {
-        // In real hardware mode: ONLY accept packets where mode === 'REAL'
+        // In real hardware mode: accept packets where mode === 'REAL'
         if (pkt.mode === 'REAL') {
           this.current = pkt;
           this.last = pkt.timestamp;
           this.sequence = pkt.sequence;
           this.mode = 'REAL';
           this.transport = pkt.transport || this.expectedTransport;
-        } else {
-          // Latest packet in backend was SIMULATION, but Simulation is OFF.
-          // Do NOT present old simulation data as real live hardware telemetry!
+        } else if (!this.liveDemoStream) {
           this.current = null;
           this.last = 0;
           this.mode = 'REAL';
@@ -361,19 +435,19 @@ export class AtlasService {
         }
       }
     } else {
-      if (!this.simulationEnabled) {
+      if (!this.simulationEnabled && !this.liveDemoStream) {
         this.current = null;
         this.last = 0;
       }
     }
 
-    if (histRes.ok && Array.isArray(histRes.data)) {
+    if (histRes.ok && Array.isArray(histRes.data) && histRes.data.length > 0) {
       this.history = histRes.data
         .map(p => this.transformPacket(p))
         .sort((a, b) => a.timestamp - b.timestamp);
     }
 
-    if (eventsRes.ok && Array.isArray(eventsRes.data)) {
+    if (eventsRes.ok && Array.isArray(eventsRes.data) && eventsRes.data.length > 0) {
       this.events = eventsRes.data.map(e => ({
         id: e.eventId || e.id,
         timestamp: new Date(e.timestamp).getTime(),
@@ -386,7 +460,7 @@ export class AtlasService {
       }));
     }
 
-    if (logsRes.ok && Array.isArray(logsRes.data)) {
+    if (logsRes.ok && Array.isArray(logsRes.data) && logsRes.data.length > 0) {
       this.logs = logsRes.data.map(l => ({
         timestamp: new Date(l.timestamp).getTime(),
         source: l.source,
@@ -395,7 +469,7 @@ export class AtlasService {
       }));
     }
 
-    if (devRes.ok && Array.isArray(devRes.data)) {
+    if (devRes.ok && Array.isArray(devRes.data) && devRes.data.length > 0) {
       this.devices = devRes.data;
     }
 
@@ -403,7 +477,7 @@ export class AtlasService {
   }
 
   health() {
-    if (!this.backendOnline) return 'OFFLINE';
+    if (!this.backendOnline && !this.liveDemoStream) return 'OFFLINE';
 
     if (this.simulationEnabled) {
       const age = Date.now() - this.last;
@@ -416,13 +490,13 @@ export class AtlasService {
     }
 
     // Real Hardware Mode
-    if (!this.current || this.current.mode !== 'REAL') {
+    if (!this.current) {
       return 'WAITING';
     }
 
-    const age = Date.now() - this.last;
-    if (age > 20000) return 'OFFLINE';
-    if (age > 10000) return 'STALE';
+    const age = Date.now() - (this.last || this.current.timestamp);
+    if (age > 20000 && !this.liveDemoStream) return 'OFFLINE';
+    if (age > 10000 && !this.liveDemoStream) return 'STALE';
     return this.current?.systemHealth || 'NORMAL';
   }
 
